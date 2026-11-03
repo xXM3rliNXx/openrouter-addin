@@ -1,0 +1,32 @@
+{
+  "functions": [
+    {
+      "id": "PROMPT",
+      "name": "PROMPT",
+      "description": "Sendet einen Prompt an OpenRouter und gibt die Antwort zurück.",
+      "helpUrl": "https://openrouter.ai/models",
+      "result": {
+        "type": "string"
+      },
+      "parameters": [
+        {
+          "name": "Prompt",
+          "description": "Frage bzw. Anweisung (Text oder Zellbezug)",
+          "type": "any"
+        },
+        {
+          "name": "Modell",
+          "description": "OpenRouter-Modell-ID, z. B. \"openai/gpt-4o-mini\". Leer = Standardmodell aus den Einstellungen",
+          "type": "any",
+          "optional": true
+        },
+        {
+          "name": "Systemprompt",
+          "description": "Rolle oder Formatvorgabe, z. B. \"Antworte nur mit Ja oder Nein.\"",
+          "type": "any",
+          "optional": true
+        }
+      ]
+    }
+  ]
+}

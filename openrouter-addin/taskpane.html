@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenRouter</title>
+  <script src="https://officeapis.public.onecdn.static.microsoft/1/office.js"></script>
+  <script src="functions.js"></script>
+  <style>
+    body { font-family: "Segoe UI", sans-serif; font-size: 13px; margin: 16px; color: #222; }
+    h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+    p.hint { color: #666; margin: 0 0 16px; }
+    label { display: block; font-weight: 600; margin: 14px 0 4px; }
+    input { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid #bbb; border-radius: 3px; font-size: 13px; }
+    small { color: #666; display: block; margin-top: 3px; }
+    button { margin-top: 14px; padding: 7px 14px; border: 1px solid #0f6cbd; background: #0f6cbd; color: #fff; border-radius: 3px; cursor: pointer; font-size: 13px; }
+    button.secondary { background: #fff; color: #0f6cbd; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    #msg { margin-top: 10px; min-height: 18px; color: #107c10; }
+    hr { border: none; border-top: 1px solid #ddd; margin: 22px 0 6px; }
+    code { background: #f3f3f3; padding: 1px 4px; border-radius: 3px; }
+    #status { color: #444; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>OpenRouter</h1>
+  <p class="hint">Syntax: <code>=OPENROUTER.PROMPT(Prompt; [Modell]; [Systemprompt])</code></p>
+
+  <label for="apiKey">API-Key</label>
+  <input id="apiKey" type="password" placeholder="sk-or-v1-..." autocomplete="off">
+  <small>Wird nur lokal auf diesem Rechner gespeichert.</small>
+
+  <label for="model">Standardmodell</label>
+  <input id="model" type="text" placeholder="openrouter/auto">
+  <small>Modell-IDs: openrouter.ai/models</small>
+
+  <label for="maxParallel">Parallele Anfragen</label>
+  <input id="maxParallel" type="number" min="1" max="50">
+
+  <button id="save">Speichern</button>
+  <div id="msg"></div>
+
+  <hr>
+  <div id="status"></div>
+  <div class="row">
+    <button id="recalc" class="secondary" title="Fehlerhafte und fehlende Antworten erneut abfragen. Vorhandene Antworten kommen aus dem Cache.">Fehler neu abfragen</button>
+    <button id="clear" class="secondary" title="Alle gespeicherten Antworten verwerfen">Cache leeren</button>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    function flash(text, isError) {
+      $("msg").style.color = isError ? "#c50f1f" : "#107c10";
+      $("msg").textContent = text;
+      setTimeout(() => { $("msg").textContent = ""; }, 4000);
+    }
+
+    function updateStatus() {
+      $("status").textContent =
+        "Gespeicherte Antworten: " + ORCache.size +
+        "   |   laufend: " + ORStatus.running +
+        "   |   wartend: " + ORStatus.queued;
+    }
+
+    async function recalc() {
+      await Excel.run(async (ctx) => {
+        ctx.workbook.application.calculate(Excel.CalculationType.full);
+        await ctx.sync();
+      });
+    }
+
+    Office.onReady(() => {
+      // Add-in beim Oeffnen von Dateien automatisch laden, damit die Funktion sofort verfuegbar ist
+      try { Office.addin.setStartupBehavior(Office.StartupBehavior.load).catch(() => {}); } catch (e) { /* aeltere Versionen */ }
+
+      $("apiKey").value = ORSettings.apiKey;
+      $("model").value = localStorage.getItem("openrouter.model") || "";
+      $("maxParallel").value = ORSettings.maxParallel;
+      updateStatus();
+      setInterval(updateStatus, 1000);
+
+      $("save").onclick = () => {
+        ORSettings.apiKey = $("apiKey").value.trim();
+        ORSettings.model = $("model").value.trim();
+        const n = parseInt($("maxParallel").value, 10);
+        ORSettings.maxParallel = n > 0 ? n : 8;
+        flash("Gespeichert.");
+      };
+
+      $("recalc").onclick = async () => {
+        try { await recalc(); flash("Neuberechnung gestartet."); }
+        catch (e) { flash("Fehler: " + e.message, true); }
+      };
+
+      $("clear").onclick = () => {
+        if (!confirmClear()) return;
+        ORCache.clear();
+        updateStatus();
+        flash("Cache geleert. Neue Abfragen erst bei Neuberechnung.");
+      };
+    });
+
+    // confirm() ist in Office-Add-ins nicht verfuegbar -> zweistufiger Klick
+    let armed = false;
+    function confirmClear() {
+      if (armed) { armed = false; $("clear").textContent = "Cache leeren"; return true; }
+      armed = true;
+      $("clear").textContent = "Wirklich leeren?";
+      setTimeout(() => { armed = false; $("clear").textContent = "Cache leeren"; }, 4000);
+      return false;
+    }
+  </script>
+</body>
+</html>
