@@ -27,6 +27,35 @@
           "optional": true
         }
       ]
+    },
+    {
+      "id": "BEWERTEN",
+      "name": "BEWERTEN",
+      "description": "Bewertet alle Zellen eines Bereichs im Vergleich zueinander nach einem Kriterium (100 = am besten, 0 = am schlechtesten). Ergebnis läuft automatisch über.",
+      "helpUrl": "https://openrouter.ai/models",
+      "result": {
+        "type": "any",
+        "dimensionality": "matrix"
+      },
+      "parameters": [
+        {
+          "name": "Bereich",
+          "description": "Die zu vergleichenden Zellen, z. B. A2:A50. Leere Zellen werden übersprungen.",
+          "type": "any",
+          "dimensionality": "matrix"
+        },
+        {
+          "name": "Kriterium",
+          "description": "Wonach bewertet wird, z. B. \"Wie konkret ist der Kundennutzen beschrieben?\"",
+          "type": "any"
+        },
+        {
+          "name": "Modell",
+          "description": "OpenRouter-Modell-ID. Leer = Standardmodell aus den Einstellungen",
+          "type": "any",
+          "optional": true
+        }
+      ]
     }
   ]
 }

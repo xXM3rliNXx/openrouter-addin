@@ -1,6 +1,9 @@
 /* global CustomFunctions */
 /*
- * OpenRouter-Funktion fuer Excel: =OPENROUTER.PROMPT(Prompt; [Modell]; [Systemprompt])
+ * OpenRouter-Funktionen fuer Excel
+ *
+ *   =OPENROUTER.PROMPT(Prompt; [Modell]; [Systemprompt])
+ *   =OPENROUTER.BEWERTEN(Bereich; Kriterium; [Modell])
  *
  * - laeuft asynchron (Zelle zeigt #BUSY!, Excel bleibt bedienbar)
  * - begrenzt gleichzeitige Anfragen (Einstellung "Parallele Anfragen")
@@ -87,8 +90,9 @@ const ORStatus = {
 
 // ---------- API-Aufruf ----------
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const errText = (e) => (e && e.message ? e.message : String(e));
 
-async function callOpenRouter(model, system, prompt) {
+async function callOpenRouter(model, system, prompt, extra) {
   const messages = [];
   if (system) messages.push({ role: "system", content: system });
   messages.push({ role: "user", content: prompt });
@@ -101,7 +105,7 @@ async function callOpenRouter(model, system, prompt) {
         "Content-Type": "application/json",
         "X-Title": "Excel OpenRouter Add-in"
       },
-      body: JSON.stringify({ model, messages })
+      body: JSON.stringify(Object.assign({ model, messages }, extra || {}))
     });
 
     if ((res.status === 429 || res.status >= 500) && attempt < MAX_RETRIES) {
@@ -125,38 +129,20 @@ async function callOpenRouter(model, system, prompt) {
   }
 }
 
-// ---------- Zellfunktion ----------
+// Cache + gleiche laufende Anfragen zusammenfassen + Parallelitaet begrenzen.
+// Fehler werden nicht gecacht, sondern an den Aufrufer weitergereicht.
 const inflight = new Map();
 
-/**
- * Sendet einen Prompt an OpenRouter und gibt die Antwort zurueck.
- * @param {any} prompt   Prompt (Text oder Zellbezug)
- * @param {any} [model]  Modell-ID, leer = Standardmodell aus den Einstellungen
- * @param {any} [system] Systemprompt
- * @returns {Promise<string>}
- */
-async function prompt(prompt, model, system) {
-  prompt = prompt == null ? "" : String(prompt);
-  if (prompt.trim() === "") return "";
-  model = model == null || String(model).trim() === "" ? ORSettings.model : String(model).trim();
-  system = system == null ? "" : String(system);
-
-  if (!ORSettings.apiKey) {
-    return "#FEHLER: Kein API-Key - bitte unter Start > OpenRouter eintragen";
-  }
-
-  const key = JSON.stringify([model, system, prompt]);
-  if (ORCache.has(key)) return ORCache.get(key);
-  if (inflight.has(key)) return inflight.get(key);   // gleiche Anfrage laeuft schon
+function runCached(key, task) {
+  if (ORCache.has(key)) return Promise.resolve(ORCache.get(key));
+  if (inflight.has(key)) return inflight.get(key);
 
   const job = (async () => {
     await acquire();
     try {
-      const answer = (await callOpenRouter(model, system, prompt)).slice(0, MAX_CELL_LENGTH);
-      ORCache.set(key, answer);
-      return answer;
-    } catch (e) {
-      return "#FEHLER " + (e && e.message ? e.message : e);
+      const value = await task();
+      ORCache.set(key, value);
+      return value;
     } finally {
       release();
       inflight.delete(key);
@@ -167,11 +153,122 @@ async function prompt(prompt, model, system) {
   return job;
 }
 
+const NO_KEY = "#FEHLER: Kein API-Key - bitte unter Start > OpenRouter eintragen";
+
+function pickModel(model) {
+  return model == null || String(model).trim() === "" ? ORSettings.model : String(model).trim();
+}
+
+// ================== =OPENROUTER.PROMPT ==================
+
+/**
+ * Sendet einen Prompt an OpenRouter und gibt die Antwort zurueck.
+ */
+async function prompt(prompt, model, system) {
+  prompt = prompt == null ? "" : String(prompt);
+  if (prompt.trim() === "") return "";
+  model = pickModel(model);
+  system = system == null ? "" : String(system);
+  if (!ORSettings.apiKey) return NO_KEY;
+
+  const key = JSON.stringify([model, system, prompt]);
+  try {
+    return await runCached(key, async () =>
+      (await callOpenRouter(model, system, prompt)).slice(0, MAX_CELL_LENGTH));
+  } catch (e) {
+    return "#FEHLER " + errText(e);
+  }
+}
+
+// ================== =OPENROUTER.BEWERTEN ==================
+
+const BEWERTEN_SYSTEM =
+  "Du bewertest Eintraege vergleichend nach einem vorgegebenen Kriterium. " +
+  "Lies zuerst alle Eintraege und vergleiche sie miteinander. " +
+  "Gib dann jedem Eintrag eine ganze Zahl von 0 bis 100: Der Eintrag, der das Kriterium am besten erfuellt, " +
+  "bekommt 100, der Eintrag, der es am schlechtesten erfuellt, bekommt 0. Die uebrigen liegen dazwischen, " +
+  "entsprechend ihrem Abstand zum besten und schlechtesten Eintrag. Gleich gute Eintraege bekommen den gleichen Wert. " +
+  "Antworte ausschliesslich mit einem JSON-Array aus Zahlen in derselben Reihenfolge wie die Eintraege, " +
+  "ohne Erklaerung und ohne weiteren Text.";
+
+function parseScores(text, n) {
+  const a = text.indexOf("[");
+  const b = text.lastIndexOf("]");
+  if (a < 0 || b <= a) return null;
+  let arr;
+  try { arr = JSON.parse(text.slice(a, b + 1)); } catch (e) { return null; }
+  if (!Array.isArray(arr) || arr.length !== n) return null;
+  const nums = arr.map((x) => (x && typeof x === "object" ? (x.score ?? x.wert ?? x.value) : x)).map(Number);
+  if (nums.some((x) => !isFinite(x))) return null;
+  return nums.map((x) => Math.round(Math.max(0, Math.min(100, x))));
+}
+
+async function scoreItems(model, kriterium, items) {
+  const n = items.length;
+  const user =
+    "Kriterium: " + kriterium + "\n\n" +
+    "Eintraege (JSON-Array mit " + n + " Eintraegen):\n" + JSON.stringify(items) + "\n\n" +
+    "Antworte mit einem JSON-Array aus genau " + n + " Zahlen.";
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const text = await callOpenRouter(model, BEWERTEN_SYSTEM, user, { temperature: 0 });
+    const scores = parseScores(text, n);
+    if (scores) return scores;
+  }
+  throw new Error("Antwort des Modells nicht auswertbar (erwartet: " + n + " Zahlen)");
+}
+
+function emptyLike(grid) {
+  return grid.map((row) => row.map(() => ""));
+}
+
+function errorGrid(grid, msg) {
+  const out = emptyLike(grid);
+  out[0][0] = msg;
+  return out;
+}
+
+/**
+ * Bewertet alle Zellen eines Bereichs vergleichend nach einem Kriterium.
+ * Gibt einen Bereich gleicher Form zurueck (100 = am besten, 0 = am schlechtesten).
+ */
+async function bewerten(bereich, kriterium, model) {
+  const grid = Array.isArray(bereich) ? bereich : [[bereich]];
+  kriterium = kriterium == null ? "" : String(kriterium).trim();
+  if (!kriterium) return errorGrid(grid, "#FEHLER: Kriterium fehlt");
+  if (!ORSettings.apiKey) return errorGrid(grid, NO_KEY);
+  model = pickModel(model);
+
+  const items = [];
+  const pos = [];
+  grid.forEach((row, i) => row.forEach((v, j) => {
+    const s = v == null ? "" : String(v).trim();
+    if (s) { items.push(s); pos.push([i, j]); }
+  }));
+
+  const out = emptyLike(grid);
+  if (items.length === 0) return out;
+  if (items.length === 1) { out[pos[0][0]][pos[0][1]] = 100; return out; }
+
+  const key = JSON.stringify(["BEWERTEN", model, kriterium, items]);
+  let scores;
+  try {
+    scores = await runCached(key, () => scoreItems(model, kriterium, items));
+  } catch (e) {
+    return errorGrid(grid, "#FEHLER " + errText(e));
+  }
+
+  pos.forEach(([i, j], k) => { out[i][j] = scores[k]; });
+  return out;
+}
+
+// ---------- Registrierung ----------
 if (typeof CustomFunctions !== "undefined") {
   CustomFunctions.associate("PROMPT", prompt);
+  CustomFunctions.associate("BEWERTEN", bewerten);
 }
 
 // fuer Tests unter Node
 if (typeof module !== "undefined") {
-  module.exports = { prompt, ORSettings, ORCache, ORStatus };
+  module.exports = { prompt, bewerten, parseScores, ORSettings, ORCache, ORStatus };
 }
