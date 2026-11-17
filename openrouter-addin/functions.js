@@ -2,8 +2,9 @@
 /*
  * OpenRouter-Funktionen fuer Excel
  *
- *   =OPENROUTER.PROMPT(Prompt; [Modell]; [Systemprompt])
+ *   =OPENROUTER.PROMPT(Prompt; [Modell]; [Systemprompt]; [Websuche])
  *   =OPENROUTER.BEWERTEN(Bereich; Kriterium; [Modell])
+ *   =OPENROUTER.MODELS([Suchbegriff]; [Suchbegriff]; ...)
  *
  * - laeuft asynchron (Zelle zeigt #BUSY!, Excel bleibt bedienbar)
  * - begrenzt gleichzeitige Anfragen (Einstellung "Parallele Anfragen")
@@ -161,20 +162,31 @@ function pickModel(model) {
 
 // ================== =OPENROUTER.PROMPT ==================
 
+function isTrue(v) {
+  if (v === true) return true;
+  if (v == null || v === false) return false;
+  if (typeof v === "number") return v !== 0;
+  return ["wahr", "true", "ja", "yes", "1", "x", "web"].includes(String(v).trim().toLowerCase());
+}
+
 /**
  * Sendet einen Prompt an OpenRouter und gibt die Antwort zurueck.
+ * websuche = WAHR -> OpenRouter-Server-Tool "openrouter:web_search" wird mitgeschickt.
  */
-async function prompt(prompt, model, system) {
+async function prompt(prompt, model, system, websuche) {
   prompt = prompt == null ? "" : String(prompt);
   if (prompt.trim() === "") return "";
   model = pickModel(model);
   system = system == null ? "" : String(system);
+  const web = isTrue(websuche);
   if (!ORSettings.apiKey) return NO_KEY;
 
-  const key = JSON.stringify([model, system, prompt]);
+  // Schluessel ohne Websuche bleibt wie bisher -> vorhandener Cache gilt weiter
+  const key = JSON.stringify(web ? [model, system, prompt, "web"] : [model, system, prompt]);
+  const extra = web ? { tools: [{ type: "openrouter:web_search" }] } : undefined;
   try {
     return await runCached(key, async () =>
-      (await callOpenRouter(model, system, prompt)).slice(0, MAX_CELL_LENGTH));
+      (await callOpenRouter(model, system, prompt, extra)).slice(0, MAX_CELL_LENGTH));
   } catch (e) {
     return "#FEHLER " + errText(e);
   }
@@ -262,13 +274,77 @@ async function bewerten(bereich, kriterium, model) {
   return out;
 }
 
+// ================== =OPENROUTER.MODELS ==================
+
+const MODELS_URL = "https://openrouter.ai/api/v1/models";
+const MODELS_TTL_MS = 60 * 60 * 1000;   // Modellliste 1 Stunde im Speicher halten
+let modelsCache = null;                   // { time, promise }
+
+async function fetchAllModels() {
+  const all = [];
+  let url = MODELS_URL;
+  for (let page = 0; url && page < 20; page++) {
+    const headers = ORSettings.apiKey ? { "Authorization": "Bearer " + ORSettings.apiKey } : {};
+    const res = await fetch(url, { headers });
+    let data = {};
+    try { data = await res.json(); } catch (e) { /* kein JSON */ }
+    if (!res.ok || data.error) {
+      throw new Error(res.status + ": " + ((data.error && data.error.message) || res.statusText || "unbekannter Fehler"));
+    }
+    (data.data || []).forEach((m) => all.push(m));
+    // falls die Liste seitenweise kommt
+    const next = (data.links && data.links.next) || data.next || null;
+    url = next ? new URL(next, "https://openrouter.ai/api/v1/").toString() : null;
+  }
+  return all;
+}
+
+function getModels() {
+  if (!modelsCache || Date.now() - modelsCache.time > MODELS_TTL_MS) {
+    const promise = fetchAllModels();
+    modelsCache = { time: Date.now(), promise };
+    promise.catch(() => { modelsCache = null; });   // Fehler nicht merken
+  }
+  return modelsCache.promise;
+}
+
+function flatten(v) {
+  if (Array.isArray(v)) return v.reduce((acc, x) => acc.concat(flatten(x)), []);
+  return [v];
+}
+
+/**
+ * Listet Modell-IDs, die ALLE Suchbegriffe enthalten (Gross-/Kleinschreibung egal),
+ * neueste zuerst. Ohne Suchbegriff: alle Modelle.
+ */
+async function models(filter) {
+  const terms = flatten(filter == null ? [] : filter)
+    .map((t) => (t == null ? "" : String(t).trim().toLowerCase()))
+    .filter((t) => t !== "");
+
+  let list;
+  try {
+    list = await getModels();
+  } catch (e) {
+    return [["#FEHLER " + errText(e)]];
+  }
+
+  const ids = list
+    .filter((m) => m && m.id && terms.every((t) => m.id.toLowerCase().includes(t)))
+    .sort((a, b) => (b.created || 0) - (a.created || 0))
+    .map((m) => [m.id]);
+
+  return ids.length ? ids : [["(keine Treffer)"]];
+}
+
 // ---------- Registrierung ----------
 if (typeof CustomFunctions !== "undefined") {
   CustomFunctions.associate("PROMPT", prompt);
   CustomFunctions.associate("BEWERTEN", bewerten);
+  CustomFunctions.associate("MODELS", models);
 }
 
 // fuer Tests unter Node
 if (typeof module !== "undefined") {
-  module.exports = { prompt, bewerten, parseScores, ORSettings, ORCache, ORStatus };
+  module.exports = { prompt, bewerten, models, parseScores, ORSettings, ORCache, ORStatus };
 }

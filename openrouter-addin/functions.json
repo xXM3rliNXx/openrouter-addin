@@ -25,6 +25,12 @@
           "description": "Rolle oder Formatvorgabe, z. B. \"Antworte nur mit Ja oder Nein.\"",
           "type": "any",
           "optional": true
+        },
+        {
+          "name": "Websuche",
+          "description": "WAHR = das Modell darf im Web suchen (OpenRouter-Websuche, kostet pro Suche extra). Standard: FALSCH",
+          "type": "any",
+          "optional": true
         }
       ]
     },
@@ -54,6 +60,24 @@
           "description": "OpenRouter-Modell-ID. Leer = Standardmodell aus den Einstellungen",
           "type": "any",
           "optional": true
+        }
+      ]
+    },
+    {
+      "id": "MODELS",
+      "name": "MODELS",
+      "description": "Listet OpenRouter-Modell-IDs, die alle angegebenen Suchbegriffe enthalten (neueste zuerst). Ergebnis läuft automatisch über.",
+      "helpUrl": "https://openrouter.ai/models",
+      "result": {
+        "type": "string",
+        "dimensionality": "matrix"
+      },
+      "parameters": [
+        {
+          "name": "Suchbegriff",
+          "description": "Teil der Modell-ID, z. B. \"openai\", \"opus\", \"latest\". Mehrere Begriffe müssen alle vorkommen.",
+          "type": "any",
+          "repeating": true
         }
       ]
     }
